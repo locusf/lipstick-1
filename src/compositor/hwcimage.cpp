@@ -31,7 +31,6 @@
 
 #include <math.h>
 
-static bool hwcimage_is_enabled();
 
 #define HWCIMAGE_LOAD_EVENT ((QEvent::Type) (QEvent::User + 1))
 
@@ -145,10 +144,6 @@ HwcImage::~HwcImage()
   */
 void HwcImage::setRotationHandler(QQuickItem *item)
 {
-    if (!hwcimage_is_enabled()) {
-        qCDebug(LIPSTICK_LOG_HWC, "HwcImage ignoring rotation handler as HWC is disabled");
-        return;
-    }
 
     if (m_rotationHandler == item)
         return;
@@ -466,11 +461,6 @@ QMatrix4x4 HwcImage::reverseTransform() const
 QSGNode *HwcImage::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
 {
 
-    if (!hwcimage_is_enabled()) {
-        qCDebug(LIPSTICK_LOG_HWC) << "HwcImage" << this << "updating paint node without HWC support";
-        return updateActualPaintNode(old);
-    }
-
     /*
         When we're using hwcomposer, we replace the image with a slightly more
         complex subtree. There is an HwcNode which is where we put the buffer
@@ -522,104 +512,16 @@ QSGNode *HwcImage::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
 }
 
 
-// from hybris_nativebuffer.h in libhybris
-#define HYBRIS_USAGE_SW_WRITE_RARELY    0x00000020
-#define HYBRIS_USAGE_HW_TEXTURE         0x00000100
-#define HYBRIS_USAGE_HW_COMPOSER        0x00000800
-#define HYBRIS_PIXEL_FORMAT_RGBA_8888   1
-#define HYBRIS_PIXEL_FORMAT_RGB_888     3
-#define HYBRIS_PIXEL_FORMAT_BGRA_8888   5
-
-#define EGL_NATIVE_BUFFER_HYBRIS        0x3140
-
-extern "C" {
-    typedef EGLBoolean (EGLAPIENTRYP _eglHybrisCreateNativeBuffer)(EGLint width, EGLint height, EGLint usage, EGLint format, EGLint *stride, EGLClientBuffer *buffer);
-    typedef EGLBoolean (EGLAPIENTRYP _eglHybrisLockNativeBuffer)(EGLClientBuffer buffer, EGLint usage, EGLint l, EGLint t, EGLint w, EGLint h, void **vaddr);
-    typedef EGLBoolean (EGLAPIENTRYP _eglHybrisUnlockNativeBuffer)(EGLClientBuffer buffer);
-    typedef EGLBoolean (EGLAPIENTRYP _eglHybrisReleaseNativeBuffer)(EGLClientBuffer buffer);
-    typedef EGLBoolean (EGLAPIENTRYP _eglHybrisNativeBufferHandle)(EGLDisplay dpy, EGLClientBuffer buffer, void **handle);
-
-    typedef void (EGLAPIENTRYP _glEGLImageTargetTexture2DOESlipstick)(GLenum target, EGLImageKHR image);
-    typedef EGLImageKHR (EGLAPIENTRYP _eglCreateImageKHR)(EGLDisplay dpy, EGLContext ctx, EGLenum target, EGLClientBuffer buffer, const EGLint *attribs);
-    typedef EGLBoolean (EGLAPIENTRYP _eglDestroyImageKHR)(EGLDisplay dpy, EGLImageKHR image);
-}
-
-static _glEGLImageTargetTexture2DOESlipstick glEGLImageTargetTexture2DOESlipstick = 0;
-static _eglCreateImageKHR eglCreateImageKHR = 0;
-static _eglDestroyImageKHR eglDestroyImageKHR = 0;
-
-static _eglHybrisCreateNativeBuffer eglHybrisCreateNativeBuffer = 0;
-static _eglHybrisLockNativeBuffer eglHybrisLockNativeBuffer = 0;
-static _eglHybrisUnlockNativeBuffer eglHybrisUnlockNativeBuffer = 0;
-static _eglHybrisReleaseNativeBuffer eglHybrisReleaseNativeBuffer = 0;
-static _eglHybrisNativeBufferHandle eglHybrisNativeBufferHandle = 0;
-
-static void hwcimage_initialize()
-{
-    static bool initialized = false;
-    if (initialized)
-        return;
-    initialized = true;
-
-    glEGLImageTargetTexture2DOESlipstick = (_glEGLImageTargetTexture2DOESlipstick) eglGetProcAddress("glEGLImageTargetTexture2DOES");
-    eglCreateImageKHR = (_eglCreateImageKHR) eglGetProcAddress("eglCreateImageKHR");
-    eglDestroyImageKHR = (_eglDestroyImageKHR) eglGetProcAddress("eglDestroyImageKHR");
-    eglHybrisCreateNativeBuffer = (_eglHybrisCreateNativeBuffer) eglGetProcAddress("eglHybrisCreateNativeBuffer");
-    eglHybrisLockNativeBuffer = (_eglHybrisLockNativeBuffer) eglGetProcAddress("eglHybrisLockNativeBuffer");
-    eglHybrisUnlockNativeBuffer = (_eglHybrisUnlockNativeBuffer) eglGetProcAddress("eglHybrisUnlockNativeBuffer");
-    eglHybrisReleaseNativeBuffer = (_eglHybrisReleaseNativeBuffer) eglGetProcAddress("eglHybrisReleaseNativeBuffer");
-    eglHybrisNativeBufferHandle = (_eglHybrisNativeBufferHandle) eglGetProcAddress("eglHybrisNativeBufferHandle");
-}
-
-static bool hwcimage_is_enabled()
-{
-    if (!HwcRenderStage::isHwcEnabled())
-        return false;
-
-    // Check for availablility of EGL_HYBRIS_native_buffer support, which we
-    // need to do hwc layering of background images...
-    static int hybrisBuffers = -1;
-    if (hybrisBuffers < 0) {
-        if (strstr(eglQueryString(eglGetDisplay(EGL_DEFAULT_DISPLAY), EGL_EXTENSIONS), "EGL_HYBRIS_native_buffer2") == 0) {
-            qCDebug(LIPSTICK_LOG_HWC, "Missing required EGL extensions: 'EGL_HYBRIS_native_buffer2'");
-            hybrisBuffers = 0;
-        } else {
-            hybrisBuffers = 1;
-        }
-    }
-    return hybrisBuffers == 1;
-}
 
 QSGTexture *HwcImageTexture::create(const QImage &image, QQuickWindow *window)
 {
-    hwcimage_initialize();
-
-    if (!hwcimage_is_enabled())
-        return 0;
-
     EGLClientBuffer buffer = 0;
+
     int width = image.width();
     int height = image.height();
-    int usage = HYBRIS_USAGE_SW_WRITE_RARELY | HYBRIS_USAGE_HW_TEXTURE | HYBRIS_USAGE_HW_COMPOSER;
-    int stride = 0;
-    int format = HYBRIS_PIXEL_FORMAT_BGRA_8888;
-    char *data;
-
-    eglHybrisCreateNativeBuffer(width, height, usage, format, &stride, &buffer);
-    Q_ASSERT(buffer);
-    eglHybrisLockNativeBuffer(buffer, HYBRIS_USAGE_SW_WRITE_RARELY, 0, 0, width, height, (void **) &data);
-    Q_ASSERT(data);
-
-    const int dbpl = stride * 4;
-    const int bpl = qMin(dbpl, image.bytesPerLine());
-    for (int y=0; y<height; ++y)
-        memcpy(data + y * dbpl, image.constScanLine(y), bpl);
-
-    eglHybrisUnlockNativeBuffer(buffer);
-
     EGLImageKHR eglImage = eglCreateImageKHR(eglGetDisplay(EGL_DEFAULT_DISPLAY),
                                              EGL_NO_CONTEXT,
-                                             EGL_NATIVE_BUFFER_HYBRIS,
+                                             EGL_IMAGE_BRCM_MULTIMEDIA,
                                              buffer,
                                              0);
     Q_ASSERT(eglImage);
@@ -652,7 +554,6 @@ HwcImageTexture::~HwcImageTexture()
     Q_ASSERT(m_id == 0); // Should have been deleted via release().
 
     eglDestroyImageKHR(eglGetDisplay(EGL_DEFAULT_DISPLAY), m_image);
-    eglHybrisReleaseNativeBuffer(m_buffer);
     qCDebug(LIPSTICK_LOG_HWC,
             "HwcImageTexture(%p) destroyed, size=(%d x %d), texId=%d, buffer=%p, image=%p",
             this, m_size.width(), m_size.height(), m_id, m_buffer, m_image);
@@ -662,10 +563,6 @@ void HwcImageTexture::bind()
 {
     glBindTexture(GL_TEXTURE_2D, m_id);
     updateBindOptions(!m_bound);
-    if (!m_bound) {
-        m_bound = true;
-        glEGLImageTargetTexture2DOESlipstick(GL_TEXTURE_2D, m_image);
-    }
 }
 
 void hwcimage_delete_texture(void *, void *callbackData)
@@ -692,9 +589,7 @@ void HwcImageTexture::release()
 
 void *HwcImageTexture::handle() const
 {
-    void *h;
-    eglHybrisNativeBufferHandle(eglGetCurrentDisplay(), m_buffer, &h);
-    return h;
+    return (void*)m_buffer;
 }
 
 
